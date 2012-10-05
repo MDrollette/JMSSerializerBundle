@@ -1,0 +1,55 @@
+<?php
+
+namespace JMS\SerializerBundle\DependencyInjection\Compiler;
+
+use JMS\SerializerBundle\EventDispatcher\EventDispatcher;
+use Symfony\Component\DependencyInjection\ContainerBuilder;
+use Symfony\Component\DependencyInjection\Compiler\CompilerPassInterface;
+
+class RegisterEventListenersAndSubscribersPass implements CompilerPassInterface
+{
+    public function process(ContainerBuilder $container)
+    {
+        $listeners = array();
+        foreach ($container->findTaggedServiceIds('jms_serializer.event_listener') as $id => $tags) {
+            foreach ($tags as $attributes) {
+                if ( ! isset($attributes['event'])) {
+                    throw new \RuntimeException(sprintf('The tag "jms_serializer.event_listener" of service "%s" requires an attribute named "event".', $id));
+                }
+
+                $class = isset($attributes['class']) ? $attributes['class'] : null;
+                $format = isset($attributes['format']) ? $attributes['format'] : null;
+                $method = isset($attributes['method']) ? $attributes['method'] : EventDispatcher::getDefaultMethodName($attributes['event']);
+                $priority = isset($attributes['priority']) ? (integer) $attributes['priority'] : 0;
+
+                $listeners[$priority][] = array($attributes['event'], array($id, $method), $class, $format);
+            }
+        }
+
+        foreach ($container->findTaggedServiceIds('jms_serializer.event_subscriber') as $id => $tags) {
+            $subscriberClass = $container->getDefinition($id)->getClass();
+            if ( ! is_subclass_of($subscriberClass, 'JMS\SerializerBundle\EventDispatcher\EventSubscriberInterface')) {
+                throw new \RuntimeException(sprintf('The service "%s" (class: %s) does not implement the EventSubscriberInterface.', $id, $subscriberClass));
+            }
+
+            foreach (call_user_func($subscriberClass, 'getSubscribedEvents') as $eventData) {
+                if ( ! isset($eventData['name'])) {
+                    throw new \RuntimeException(sprintf('The service "%s" (class: %s) must return a name for each subscribed event.', $id, $subscriberClass));
+                }
+
+                $class = isset($attributes['class']) ? $attributes['class'] : null;
+                $format = isset($attributes['format']) ? $attributes['format'] : null;
+                $method = isset($attributes['method']) ? $attributes['method'] : EventDispatcher::getDefaultMethodName($attributes['event']);
+                $priority = isset($eventData['priority']) ? (integer) $eventData['priority'] : 0;
+
+                $listeners[$priority][] = array($eventData['name'], array($id, $method), $class, $format);
+            }
+        }
+
+        $dispatcher = $container->getDefinition('jms_serializer.event_dispatcher');
+        sort($listeners);
+        foreach (call_user_func_array('array_merge', $listeners) as $listener) {
+            $dispatcher->addMethodCall('addListener', $listener);
+        }
+    }
+}
